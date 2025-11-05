@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Site Report Generator</title>
+    <style>
+        body { font-family: Arial; margin: 40px; }
+        input, button { padding: 8px; margin: 5px; }
+        .site-list { margin-top: 15px; }
+        label { display: block; margin: 4px 0; }
+    </style>
+    <script>
+        function toggleSelectAll(source) {
+            const checkboxes = document.querySelectorAll('.site-checkbox');
+            checkboxes.forEach(cb => cb.checked = source.checked);
+        }
+    </script>
+</head>
+<body>
+    <h1>📄 Site Report Generator</h1>
+
+    <form method="POST" action="/generate">
+        <label>Enter Month/Year (e.g., OCT_2025):</label>
+        <input type="text" name="month_year" required>
+
+        <h3>Select Sites:</h3>
+        <label><input type="checkbox" name="sites" value="ALL" onclick="toggleSelectAll(this)"> Select All</label>
+        <div class="site-list">
+            {% for s in sites %}
+                <label>
+                    <input type="checkbox" name="sites" value="{{ s['site_name'] }}" class="site-checkbox">
+                    {{ s['site_name'] }}
+                </label>
+            {% endfor %}
+        </div>
+
+        <button type="submit">Generate Reports</button>
+    </form>
+</body>
+</html>
