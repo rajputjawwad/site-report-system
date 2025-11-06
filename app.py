@@ -6,9 +6,9 @@ from zipfile import ZipFile
 import openpyxl
 import os
 import json
-import tempfile
-import pdfkit
-from xlsx2html import xlsx2html
+
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 
 app = Flask(__name__)
 
@@ -38,6 +38,8 @@ REPORT_NAMES = {
     7: "Maternity Benefit Register"
 }
 
+# ===== ROUTES =====
+
 @app.route("/add_site", methods=["POST"])
 def add_site():
     data = request.get_json()
@@ -48,11 +50,13 @@ def add_site():
     sheet.append_row([site_name, site_address])
     return jsonify({"message": "✅ Site added successfully!"}), 200
 
+
 @app.route('/')
 def index():
     sites = sheet.get_all_records()
     site_names = [s.get('site_name') or s.get('Site Name') or "Unknown Site" for s in sites]
     return render_template('index.html', sites=site_names)
+
 
 @app.route('/generate', methods=['POST'])
 def generate():
@@ -60,7 +64,6 @@ def generate():
     selected_sites = request.form.getlist('sites')
 
     all_sites = sheet.get_all_records()
-    all_site_names = [s.get('site_name') or s.get('Site Name') or "Unknown Site" for s in all_sites]
 
     if "ALL" in selected_sites:
         sites_to_generate = all_sites
@@ -71,11 +74,14 @@ def generate():
         return "❌ No site selected."
 
     buffer = BytesIO()
+
+    # ===== CREATE ZIP FILE IN MEMORY =====
     with ZipFile(buffer, "w") as zipf:
         for site in sites_to_generate:
             site_name = site.get('site_name') or site.get('Site Name') or "Unknown_Site"
             site_address = next((v for k, v in site.items() if 'address' in k.lower()), " ")
             folder_name = site_name.replace(" ", "_")
+
             for i in range(1, 8):
                 res = fill_excel_and_export_bytes(site_name, site_address, month_year, i)
                 if res is None:
@@ -91,51 +97,70 @@ def generate():
         mimetype="application/zip"
     )
 
+
+# ===== PDF GENERATION USING REPORTLAB =====
+
 def fill_excel_and_export_bytes(site_name, site_address, month_year, report_no):
+    """
+    Generate PDF using ReportLab from Excel template data.
+    """
+    template_path = os.path.join("static", f"Report{report_no}.xlsx")
+    if not os.path.exists(template_path):
+        print(f"⚠️ Missing template: {template_path}")
+        return None
+
     try:
-        template_path = os.path.join("static", f"Report{report_no}.xlsx")
-        if not os.path.exists(template_path):
-            print(f"⚠️ Missing template: {template_path}")
-            return None
+        # Load Excel (optional, if you want to read content)
+        wb = openpyxl.load_workbook(template_path)
+        ws = wb.active
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            safe_name = site_name.replace(" ", "_").replace("/", "_")
-            output_xlsx = os.path.join(tmpdir, f"temp_{safe_name}_Report{report_no}.xlsx")
+        # Create PDF in memory
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=A4)
+        width, height = A4
+        y = height - 50
 
-            # Fill Excel template
-            wb = openpyxl.load_workbook(template_path)
-            ws = wb.active
-            if 1 <= report_no <= 5:
-                ws["I5"] = site_address
-                ws["I8"] = site_address
-                ws["I10"] = site_address
-                ws["D10"] = month_year
-            elif report_no == 6:
-                ws["A5"] = f"Name and address of the Establishment:- {site_address}"
-                ws["A9"] = f"There are no Accident for the Month {month_year}"
-            elif report_no == 7:
-                ws["A4"] = f"Name and address of the Establishment:- {site_address}"
-                ws["R4"] = month_year
-            wb.save(output_xlsx)
-            wb.close()
+        # Report title
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(50, y, REPORT_NAMES.get(report_no, f"Report {report_no}"))
+        y -= 30
 
-            # Convert Excel -> HTML
-            html_path = os.path.join(tmpdir, f"{safe_name}_Report{report_no}.html")
-            xlsx2html(output_xlsx, html_path)
+        # Site info
+        c.setFont("Helvetica", 12)
+        c.drawString(50, y, f"Site Name: {site_name}")
+        y -= 20
+        c.drawString(50, y, f"Site Address: {site_address}")
+        y -= 20
+        c.drawString(50, y, f"Month/Year: {month_year}")
+        y -= 30
 
-            # Convert HTML -> PDF
-            pdf_path = os.path.join(tmpdir, f"{safe_name}_Report{report_no}.pdf")
-            pdfkit.from_file(html_path, pdf_path)
+        # Custom content based on report
+        if report_no in range(1, 6):
+            # Example: write first 10 rows from column A
+            for i, row in enumerate(ws.iter_rows(min_row=1, max_row=10, min_col=1, max_col=1)):
+                val = row[0].value
+                if val:
+                    c.drawString(50, y, str(val))
+                    y -= 15
+        elif report_no == 6:
+            c.drawString(50, y, f"Accident info: There are no Accidents for the Month {month_year}")
+        elif report_no == 7:
+            c.drawString(50, y, f"Maternity Benefit info for Month: {month_year}")
 
-            with open(pdf_path, "rb") as f:
-                pdf_bytes = f.read()
+        # Finish PDF page
+        c.showPage()
+        c.save()
 
-            report_filename = f"{REPORT_NAMES.get(report_no, f'Report{report_no}')}.pdf"
-            return pdf_bytes, report_filename
+        buffer.seek(0)
+        pdf_bytes = buffer.read()
+        report_filename = f"{REPORT_NAMES.get(report_no, f'Report{report_no}')}.pdf"
+        return pdf_bytes, report_filename
 
     except Exception as e:
         print(f"❌ Error generating Report {report_no} for {site_name}: {e}")
         return None
 
+
+# ===== RUN APP =====
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)

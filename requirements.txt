@@ -3,5 +3,4 @@ gspread==5.9.0
 google-auth==2.23.0
 openpyxl==3.1.2
 gunicorn==21.2.0
-pdfkit==1.0.0
-xlsx2html==0.9.2
+reportlab==4.1.0
