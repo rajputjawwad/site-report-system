@@ -7,6 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE $PORT
+# Just expose a static port for documentation
+EXPOSE 10000
 
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:$PORT", "--timeout", "120", "--workers", "1"]
+# Use shell form so $PORT expands at runtime
+CMD gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
