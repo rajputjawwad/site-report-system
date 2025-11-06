@@ -1,16 +1,23 @@
+# Use a lightweight Python image
 FROM python:3.11-slim
 
-# Install LibreOffice + fonts
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    libreoffice-core libreoffice-calc libreoffice-writer fonts-dejavu-core && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
+# Set working directory
 WORKDIR /app
-COPY requirements.txt /app/
+
+# Install system dependencies (LibreOffice + fonts)
+RUN apt-get update && apt-get install -y libreoffice fonts-dejavu-core && apt-get clean
+
+# Copy requirement list first (for caching)
+COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . /app
 
-ENV PORT=10000
+# Copy the rest of your app
+COPY . .
 
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:10000", "--workers", "2"]
+# Expose the port Render will map
+EXPOSE 10000
+
+# Start the app with Gunicorn
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:10000"]
