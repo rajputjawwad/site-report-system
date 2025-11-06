@@ -7,8 +7,8 @@ import openpyxl
 import os
 import json
 import tempfile
-import subprocess
-import shutil
+import pdfkit
+from xlsx2html import xlsx2html
 
 app = Flask(__name__)
 
@@ -18,7 +18,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-# Use environment variable for credentials
 creds_env = os.environ.get("GOOGLE_CREDS")
 if not creds_env:
     raise RuntimeError("❌ Missing GOOGLE_CREDS environment variable with service account JSON")
@@ -39,27 +38,21 @@ REPORT_NAMES = {
     7: "Maternity Benefit Register"
 }
 
-
 @app.route("/add_site", methods=["POST"])
 def add_site():
     data = request.get_json()
     site_name = data.get("site_name")
     site_address = data.get("site_address")
-
     if not site_name or not site_address:
         return jsonify({"message": "Both fields required!"}), 400
-
-    # Append to Google Sheet
     sheet.append_row([site_name, site_address])
     return jsonify({"message": "✅ Site added successfully!"}), 200
-
 
 @app.route('/')
 def index():
     sites = sheet.get_all_records()
     site_names = [s.get('site_name') or s.get('Site Name') or "Unknown Site" for s in sites]
     return render_template('index.html', sites=site_names)
-
 
 @app.route('/generate', methods=['POST'])
 def generate():
@@ -78,14 +71,11 @@ def generate():
         return "❌ No site selected."
 
     buffer = BytesIO()
-
-    # ===== CREATE ZIP FILE IN MEMORY =====
     with ZipFile(buffer, "w") as zipf:
         for site in sites_to_generate:
             site_name = site.get('site_name') or site.get('Site Name') or "Unknown_Site"
             site_address = next((v for k, v in site.items() if 'address' in k.lower()), " ")
             folder_name = site_name.replace(" ", "_")
-
             for i in range(1, 8):
                 res = fill_excel_and_export_bytes(site_name, site_address, month_year, i)
                 if res is None:
@@ -101,12 +91,7 @@ def generate():
         mimetype="application/zip"
     )
 
-
 def fill_excel_and_export_bytes(site_name, site_address, month_year, report_no):
-    """
-    Fill Excel template and convert to PDF using LibreOffice headless.
-    Returns (pdf_bytes, filename) or None.
-    """
     try:
         template_path = os.path.join("static", f"Report{report_no}.xlsx")
         if not os.path.exists(template_path):
@@ -117,10 +102,9 @@ def fill_excel_and_export_bytes(site_name, site_address, month_year, report_no):
             safe_name = site_name.replace(" ", "_").replace("/", "_")
             output_xlsx = os.path.join(tmpdir, f"temp_{safe_name}_Report{report_no}.xlsx")
 
-            # ===== LOAD AND FILL EXCEL TEMPLATE =====
+            # Fill Excel template
             wb = openpyxl.load_workbook(template_path)
             ws = wb.active
-
             if 1 <= report_no <= 5:
                 ws["I5"] = site_address
                 ws["I8"] = site_address
@@ -132,30 +116,17 @@ def fill_excel_and_export_bytes(site_name, site_address, month_year, report_no):
             elif report_no == 7:
                 ws["A4"] = f"Name and address of the Establishment:- {site_address}"
                 ws["R4"] = month_year
-
             wb.save(output_xlsx)
             wb.close()
 
-            # ===== CONVERT TO PDF USING LIBREOFFICE =====
-            soffice = shutil.which("soffice")
-            if not soffice:
-                print("❌ LibreOffice not found on system PATH.")
-                return None
+            # Convert Excel -> HTML
+            html_path = os.path.join(tmpdir, f"{safe_name}_Report{report_no}.html")
+            xlsx2html(output_xlsx, html_path)
 
-            cmd = [soffice, "--headless", "--convert-to", "pdf", "--outdir", tmpdir, output_xlsx]
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+            # Convert HTML -> PDF
+            pdf_path = os.path.join(tmpdir, f"{safe_name}_Report{report_no}.pdf")
+            pdfkit.from_file(html_path, pdf_path)
 
-            if proc.returncode != 0:
-                print("❌ LibreOffice conversion failed:", proc.stdout, proc.stderr)
-                return None
-
-            # Find generated PDF
-            pdf_files = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.lower().endswith(".pdf")]
-            if not pdf_files:
-                print("❌ No PDF generated for", site_name)
-                return None
-
-            pdf_path = pdf_files[0]
             with open(pdf_path, "rb") as f:
                 pdf_bytes = f.read()
 
@@ -165,7 +136,6 @@ def fill_excel_and_export_bytes(site_name, site_address, month_year, report_no):
     except Exception as e:
         print(f"❌ Error generating Report {report_no} for {site_name}: {e}")
         return None
-
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
