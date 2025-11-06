@@ -4,31 +4,27 @@ from google.oauth2.service_account import Credentials
 from io import BytesIO
 from zipfile import ZipFile
 import openpyxl
-import win32com.client as win32
-import pythoncom
 import os
+import json
+import tempfile
+import subprocess
+import shutil
 
 app = Flask(__name__)
 
 # ===== GOOGLE SHEET CONNECTION =====
-import json
-
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
-if os.path.exists("credentials.json"):
-    # Local development: use the file
-    creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
-else:
-    # Render deployment: load from environment variable
-    creds_json = os.getenv("GOOGLE_CREDS_JSON")
-    if not creds_json:
-        raise RuntimeError("❌ Missing GOOGLE_CREDS_JSON environment variable")
-    creds_info = json.loads(creds_json)
-    creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+# Use environment variable for credentials
+creds_env = os.environ.get("GOOGLE_CREDS")
+if not creds_env:
+    raise RuntimeError("❌ Missing GOOGLE_CREDS environment variable with service account JSON")
 
+creds_info = json.loads(creds_env)
+creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 client = gspread.authorize(creds)
 sheet = client.open("Site_database").sheet1
 
@@ -43,6 +39,7 @@ REPORT_NAMES = {
     7: "Maternity Benefit Register"
 }
 
+
 @app.route("/add_site", methods=["POST"])
 def add_site():
     data = request.get_json()
@@ -56,12 +53,11 @@ def add_site():
     sheet.append_row([site_name, site_address])
     return jsonify({"message": "✅ Site added successfully!"}), 200
 
+
 @app.route('/')
 def index():
     sites = sheet.get_all_records()
-    # Normalize site names to ensure clean display
     site_names = [s.get('site_name') or s.get('Site Name') or "Unknown Site" for s in sites]
-    print(f"✅ Normalized site list: {site_names}")
     return render_template('index.html', sites=site_names)
 
 
@@ -83,22 +79,19 @@ def generate():
 
     buffer = BytesIO()
 
-    # ===== CREATE ZIP FILE =====
+    # ===== CREATE ZIP FILE IN MEMORY =====
     with ZipFile(buffer, "w") as zipf:
         for site in sites_to_generate:
             site_name = site.get('site_name') or site.get('Site Name') or "Unknown_Site"
             site_address = next((v for k, v in site.items() if 'address' in k.lower()), " ")
-
-            # Create folder name for the site
             folder_name = site_name.replace(" ", "_")
 
             for i in range(1, 8):
-                pdf_path = fill_excel_and_export(site_name, site_address, month_year, i)
-                if pdf_path:
-                    # Use proper report name instead of "ReportX"
-                    report_filename = f"{REPORT_NAMES[i]}.pdf"
-                    zipf.write(pdf_path, os.path.join(folder_name, report_filename))
-                    os.remove(pdf_path)
+                res = fill_excel_and_export_bytes(site_name, site_address, month_year, i)
+                if res is None:
+                    continue
+                pdf_bytes, report_filename = res
+                zipf.writestr(os.path.join(folder_name, report_filename), pdf_bytes)
 
     buffer.seek(0)
     return send_file(
@@ -109,58 +102,70 @@ def generate():
     )
 
 
-def fill_excel_and_export(site_name, site_address, month_year, report_no):
-    """Fill Excel template cells and export to PDF."""
-    pythoncom.CoInitialize()
-
+def fill_excel_and_export_bytes(site_name, site_address, month_year, report_no):
+    """
+    Fill Excel template and convert to PDF using LibreOffice headless.
+    Returns (pdf_bytes, filename) or None.
+    """
     try:
-        template_path = f"Static/Report{report_no}.xlsx"
+        template_path = os.path.join("static", f"Report{report_no}.xlsx")
         if not os.path.exists(template_path):
             print(f"⚠️ Missing template: {template_path}")
             return None
 
-        output_xlsx = f"temp_{site_name}_Report{report_no}.xlsx"
-        output_pdf = f"temp_{site_name}_Report{report_no}.pdf"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            safe_name = site_name.replace(" ", "_").replace("/", "_")
+            output_xlsx = os.path.join(tmpdir, f"temp_{safe_name}_Report{report_no}.xlsx")
 
-        # ===== LOAD TEMPLATE =====
-        wb = openpyxl.load_workbook(template_path)
-        ws = wb.active
+            # ===== LOAD AND FILL EXCEL TEMPLATE =====
+            wb = openpyxl.load_workbook(template_path)
+            ws = wb.active
 
-        # ===== FILL CELLS =====
-        if 1 <= report_no <= 5:
-            ws["I5"] = site_address
-            ws["I8"] = site_address
-            ws["I10"] = site_address
-            ws["D10"] = month_year
+            if 1 <= report_no <= 5:
+                ws["I5"] = site_address
+                ws["I8"] = site_address
+                ws["I10"] = site_address
+                ws["D10"] = month_year
+            elif report_no == 6:
+                ws["A5"] = f"Name and address of the Establishment:- {site_address}"
+                ws["A9"] = f"There are no Accident for the Month {month_year}"
+            elif report_no == 7:
+                ws["A4"] = f"Name and address of the Establishment:- {site_address}"
+                ws["R4"] = month_year
 
-        elif report_no == 6:
-            ws["A5"] = f"Name and address of the Establishment:- {site_address}"
-            ws["A9"] = f"There are no Accident for the Month {month_year}"
+            wb.save(output_xlsx)
+            wb.close()
 
-        elif report_no == 7:
-            ws["A4"] = f"Name and address of the Establishment:- {site_address}"
-            ws["R4"] = month_year
+            # ===== CONVERT TO PDF USING LIBREOFFICE =====
+            soffice = shutil.which("soffice")
+            if not soffice:
+                print("❌ LibreOffice not found on system PATH.")
+                return None
 
-        wb.save(output_xlsx)
+            cmd = [soffice, "--headless", "--convert-to", "pdf", "--outdir", tmpdir, output_xlsx]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
 
-        # ===== EXPORT TO PDF =====
-        excel = win32.gencache.EnsureDispatch('Excel.Application')
-        excel.Visible = False
-        wb_obj = excel.Workbooks.Open(os.path.abspath(output_xlsx))
-        wb_obj.ExportAsFixedFormat(0, os.path.abspath(output_pdf))
-        wb_obj.Close(False)
-        excel.Quit()
+            if proc.returncode != 0:
+                print("❌ LibreOffice conversion failed:", proc.stdout, proc.stderr)
+                return None
 
-        os.remove(output_xlsx)
-        return output_pdf
+            # Find generated PDF
+            pdf_files = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.lower().endswith(".pdf")]
+            if not pdf_files:
+                print("❌ No PDF generated for", site_name)
+                return None
+
+            pdf_path = pdf_files[0]
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+
+            report_filename = f"{REPORT_NAMES.get(report_no, f'Report{report_no}')}.pdf"
+            return pdf_bytes, report_filename
 
     except Exception as e:
         print(f"❌ Error generating Report {report_no} for {site_name}: {e}")
         return None
 
-    finally:
-        pythoncom.CoUninitialize()
-
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
