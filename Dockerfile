@@ -1,14 +1,24 @@
-FROM python:3.11-slim
+# Use official Python image
+FROM python:3.10-slim
 
+# Set working directory
 WORKDIR /app
 
-COPY requirements.txt .
+# Install system dependencies (for pdfkit / wkhtmltopdf)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    wkhtmltopdf \
+    libjpeg-dev libxrender1 libfontconfig1 libxext6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy app files
+COPY . /app
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Expose port
+EXPOSE 5000
 
-# Just expose a static port for documentation
-EXPOSE 10000
-
-# Use shell form so $PORT expands at runtime
-CMD gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
+# Command for Render
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "app:app"]

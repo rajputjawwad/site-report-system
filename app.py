@@ -4,11 +4,8 @@ from google.oauth2.service_account import Credentials
 from io import BytesIO
 from zipfile import ZipFile
 import openpyxl
+import pdfkit
 import os
-import json
-
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
 
 app = Flask(__name__)
 
@@ -17,13 +14,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-
-creds_env = os.environ.get("GOOGLE_CREDS")
-if not creds_env:
-    raise RuntimeError("❌ Missing GOOGLE_CREDS environment variable with service account JSON")
-
-creds_info = json.loads(creds_env)
-creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
 client = gspread.authorize(creds)
 sheet = client.open("Site_database").sheet1
 
@@ -38,18 +29,17 @@ REPORT_NAMES = {
     7: "Maternity Benefit Register"
 }
 
-# ===== ROUTES =====
-
 @app.route("/add_site", methods=["POST"])
 def add_site():
     data = request.get_json()
     site_name = data.get("site_name")
     site_address = data.get("site_address")
+
     if not site_name or not site_address:
         return jsonify({"message": "Both fields required!"}), 400
+
     sheet.append_row([site_name, site_address])
     return jsonify({"message": "✅ Site added successfully!"}), 200
-
 
 @app.route('/')
 def index():
@@ -74,8 +64,6 @@ def generate():
         return "❌ No site selected."
 
     buffer = BytesIO()
-
-    # ===== CREATE ZIP FILE IN MEMORY =====
     with ZipFile(buffer, "w") as zipf:
         for site in sites_to_generate:
             site_name = site.get('site_name') or site.get('Site Name') or "Unknown_Site"
@@ -83,11 +71,11 @@ def generate():
             folder_name = site_name.replace(" ", "_")
 
             for i in range(1, 8):
-                res = fill_excel_and_export_bytes(site_name, site_address, month_year, i)
-                if res is None:
-                    continue
-                pdf_bytes, report_filename = res
-                zipf.writestr(os.path.join(folder_name, report_filename), pdf_bytes)
+                pdf_path = fill_excel_and_export(site_name, site_address, month_year, i)
+                if pdf_path:
+                    report_filename = f"{REPORT_NAMES[i]}.pdf"
+                    zipf.write(pdf_path, os.path.join(folder_name, report_filename))
+                    os.remove(pdf_path)
 
     buffer.seek(0)
     return send_file(
@@ -98,69 +86,54 @@ def generate():
     )
 
 
-# ===== PDF GENERATION USING REPORTLAB =====
-
-def fill_excel_and_export_bytes(site_name, site_address, month_year, report_no):
-    """
-    Generate PDF using ReportLab from Excel template data.
-    """
-    template_path = os.path.join("static", f"Report{report_no}.xlsx")
-    if not os.path.exists(template_path):
-        print(f"⚠️ Missing template: {template_path}")
-        return None
-
+def fill_excel_and_export(site_name, site_address, month_year, report_no):
     try:
-        # Load Excel (optional, if you want to read content)
+        template_path = f"Static/Report{report_no}.xlsx"
+        if not os.path.exists(template_path):
+            print(f"⚠️ Missing template: {template_path}")
+            return None
+
         wb = openpyxl.load_workbook(template_path)
         ws = wb.active
 
-        # Create PDF in memory
-        buffer = BytesIO()
-        c = canvas.Canvas(buffer, pagesize=A4)
-        width, height = A4
-        y = height - 50
-
-        # Report title
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(50, y, REPORT_NAMES.get(report_no, f"Report {report_no}"))
-        y -= 30
-
-        # Site info
-        c.setFont("Helvetica", 12)
-        c.drawString(50, y, f"Site Name: {site_name}")
-        y -= 20
-        c.drawString(50, y, f"Site Address: {site_address}")
-        y -= 20
-        c.drawString(50, y, f"Month/Year: {month_year}")
-        y -= 30
-
-        # Custom content based on report
-        if report_no in range(1, 6):
-            # Example: write first 10 rows from column A
-            for i, row in enumerate(ws.iter_rows(min_row=1, max_row=10, min_col=1, max_col=1)):
-                val = row[0].value
-                if val:
-                    c.drawString(50, y, str(val))
-                    y -= 15
+        if 1 <= report_no <= 5:
+            ws["I5"] = site_address
+            ws["I8"] = site_address
+            ws["I10"] = site_address
+            ws["D10"] = month_year
         elif report_no == 6:
-            c.drawString(50, y, f"Accident info: There are no Accidents for the Month {month_year}")
+            ws["A5"] = f"Name and address of the Establishment:- {site_address}"
+            ws["A9"] = f"There are no Accident for the Month {month_year}"
         elif report_no == 7:
-            c.drawString(50, y, f"Maternity Benefit info for Month: {month_year}")
+            ws["A4"] = f"Name and address of the Establishment:- {site_address}"
+            ws["R4"] = month_year
 
-        # Finish PDF page
-        c.showPage()
-        c.save()
+        output_xlsx = f"temp_{site_name}_Report{report_no}.xlsx"
+        wb.save(output_xlsx)
 
-        buffer.seek(0)
-        pdf_bytes = buffer.read()
-        report_filename = f"{REPORT_NAMES.get(report_no, f'Report{report_no}')}.pdf"
-        return pdf_bytes, report_filename
+        # Convert Excel to HTML
+        html_content = "<html><body><table border='1'>"
+        for row in ws.iter_rows(values_only=True):
+            html_content += "<tr>" + "".join(
+                [f"<td>{str(cell) if cell else ''}</td>" for cell in row]
+            ) + "</tr>"
+        html_content += "</table></body></html>"
+
+        html_path = f"temp_{site_name}_Report{report_no}.html"
+        with open(html_path, "w") as f:
+            f.write(html_content)
+
+        output_pdf = f"temp_{site_name}_Report{report_no}.pdf"
+        pdfkit.from_file(html_path, output_pdf)
+
+        os.remove(html_path)
+        os.remove(output_xlsx)
+        return output_pdf
 
     except Exception as e:
         print(f"❌ Error generating Report {report_no} for {site_name}: {e}")
         return None
 
 
-# ===== RUN APP =====
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
+    app.run(host='0.0.0.0', port=5000)

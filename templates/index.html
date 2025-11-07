@@ -54,10 +54,6 @@
     button[type="submit"]:hover {
        background-color: #157347;
     }
-
-    button:hover {
-      background-color: #157347;
-    }
   </style>
 
   <script>
@@ -83,6 +79,16 @@
         location.reload(); // Refresh to show the new site
       }
     }
+
+    // 🔍 Search Function
+    function filterSites() {
+      const searchInput = document.getElementById("siteSearch").value.toLowerCase();
+      const siteLabels = document.querySelectorAll(".checkbox-list label");
+      siteLabels.forEach(label => {
+        const text = label.textContent.toLowerCase();
+        label.style.display = text.includes(searchInput) ? "block" : "none";
+      });
+    }
   </script>
 </head>
 
@@ -99,6 +105,11 @@
       <div class="d-flex justify-content-between align-items-center mb-2">
         <label><input type="checkbox" name="sites" value="ALL" onclick="toggleSelectAll(this)"> Select All Sites</label>
         <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addSiteModal">➕ Add Site</button>
+      </div>
+
+      <!-- 🔍 Search Bar -->
+      <div class="mb-2">
+        <input type="text" id="siteSearch" onkeyup="filterSites()" class="form-control" placeholder="Search site...">
       </div>
 
       <div class="checkbox-list">
@@ -143,4 +154,5 @@
   </div>
 </body>
 </html>
+
 
