@@ -4,21 +4,22 @@ FROM python:3.10-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (for pdfkit / wkhtmltopdf)
+# Install dependencies for pdfkit + wkhtmltopdf
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    wkhtmltopdf \
-    libjpeg-dev libxrender1 libfontconfig1 libxext6 \
-    && rm -rf /var/lib/apt/lists/*
+    wget gnupg ca-certificates fontconfig libxrender1 libxext6 libjpeg62-turbo libpng16-16 && \
+    wget -q https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6-1/wkhtmltox_0.12.6-1.buster_amd64.deb && \
+    apt install -y ./wkhtmltox_0.12.6-1.buster_amd64.deb && \
+    rm -rf /var/lib/apt/lists/* wkhtmltox_0.12.6-1.buster_amd64.deb
 
-# Copy app files
+# Copy all project files
 COPY . /app
 
-# Install Python dependencies
+# Install Python packages
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Expose port
 EXPOSE 5000
 
-# Command for Render
+# Run the app using Gunicorn
 CMD ["gunicorn", "-b", "0.0.0.0:5000", "app:app"]
