@@ -145,9 +145,9 @@ def fill_excel_and_export(site_name, site_address, month_year, report_no):
         print(f"❌ Error generating Report {report_no} for {site_name}: {e}")
         return None
 
-
-import os
-
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    if os.environ.get("RENDER"):  # Render automatically sets this env variable
+        pass  # Gunicorn will handle it
+    else:
+        app.run(host='0.0.0.0', port=5000, debug=True)
+
