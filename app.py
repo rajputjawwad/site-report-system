@@ -6,6 +6,7 @@ from zipfile import ZipFile
 import openpyxl
 import pdfkit
 import os
+import json
 
 app = Flask(__name__)
 
@@ -14,9 +15,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-import json, os
-from google.oauth2.service_account import Credentials
 
+# Load Google credentials from Render environment variable
 service_account_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 creds = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
 client = gspread.authorize(creds)
@@ -44,6 +44,7 @@ def add_site():
 
     sheet.append_row([site_name, site_address])
     return jsonify({"message": "✅ Site added successfully!"}), 200
+
 
 @app.route('/')
 def index():
@@ -76,7 +77,7 @@ def generate():
 
             for i in range(1, 8):
                 pdf_path = fill_excel_and_export(site_name, site_address, month_year, i)
-                if pdf_path:
+                if pdf_path and os.path.exists(pdf_path):
                     report_filename = f"{REPORT_NAMES[i]}.pdf"
                     zipf.write(pdf_path, os.path.join(folder_name, report_filename))
                     os.remove(pdf_path)
@@ -100,6 +101,7 @@ def fill_excel_and_export(site_name, site_address, month_year, report_no):
         wb = openpyxl.load_workbook(template_path)
         ws = wb.active
 
+        # Fill site info into Excel
         if 1 <= report_no <= 5:
             ws["I5"] = site_address
             ws["I8"] = site_address
@@ -112,10 +114,15 @@ def fill_excel_and_export(site_name, site_address, month_year, report_no):
             ws["A4"] = f"Name and address of the Establishment:- {site_address}"
             ws["R4"] = month_year
 
-        output_xlsx = f"temp_{site_name}_Report{report_no}.xlsx"
+        # Save files to /tmp (Render allows writing only here)
+        tmp_dir = "/tmp"
+        output_xlsx = os.path.join(tmp_dir, f"temp_{site_name}_Report{report_no}.xlsx")
+        html_path = os.path.join(tmp_dir, f"temp_{site_name}_Report{report_no}.html")
+        output_pdf = os.path.join(tmp_dir, f"temp_{site_name}_Report{report_no}.pdf")
+
         wb.save(output_xlsx)
 
-        # Convert Excel to HTML
+        # Convert Excel to HTML for pdfkit
         html_content = "<html><body><table border='1'>"
         for row in ws.iter_rows(values_only=True):
             html_content += "<tr>" + "".join(
@@ -123,13 +130,13 @@ def fill_excel_and_export(site_name, site_address, month_year, report_no):
             ) + "</tr>"
         html_content += "</table></body></html>"
 
-        html_path = f"temp_{site_name}_Report{report_no}.html"
         with open(html_path, "w") as f:
             f.write(html_content)
 
-        output_pdf = f"temp_{site_name}_Report{report_no}.pdf"
+        # Generate PDF
         pdfkit.from_file(html_path, output_pdf)
 
+        # Cleanup
         os.remove(html_path)
         os.remove(output_xlsx)
         return output_pdf
