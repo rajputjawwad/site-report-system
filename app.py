@@ -7,6 +7,12 @@ import openpyxl
 import pdfkit
 import os
 
+# Detect wkhtmltopdf automatically or use default path on Render
+try:
+    config = pdfkit.configuration(wkhtmltopdf="/usr/bin/wkhtmltopdf")
+except:
+    config = None
+
 app = Flask(__name__)
 
 # ===== GOOGLE SHEET CONNECTION =====
@@ -128,7 +134,8 @@ def fill_excel_and_export(site_name, site_address, month_year, report_no):
             f.write(html_content)
 
         output_pdf = f"temp_{site_name}_Report{report_no}.pdf"
-        pdfkit.from_file(html_path, output_pdf)
+        pdfkit.from_file(html_path, output_pdf, configuration=config)
+
 
         os.remove(html_path)
         os.remove(output_xlsx)
