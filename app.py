@@ -14,7 +14,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+import json, os
+from google.oauth2.service_account import Credentials
+
+service_account_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+creds = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
 client = gspread.authorize(creds)
 sheet = client.open("Site_database").sheet1
 
