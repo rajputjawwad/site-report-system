@@ -4,14 +4,9 @@ from google.oauth2.service_account import Credentials
 from io import BytesIO
 from zipfile import ZipFile
 import openpyxl
-import pdfkit
+import subprocess
 import os
-
-# Detect wkhtmltopdf automatically or use default path on Render
-try:
-    config = pdfkit.configuration(wkhtmltopdf="/usr/bin/wkhtmltopdf")
-except:
-    config = None
+import json
 
 app = Flask(__name__)
 
@@ -20,15 +15,12 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-import json, os
-from google.oauth2.service_account import Credentials
 
 service_account_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 creds = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
 client = gspread.authorize(creds)
 sheet = client.open("Site_database").sheet1
 
-# ===== REPORT NAMES =====
 REPORT_NAMES = {
     1: "REGISTER OF DEDUCTIONS FOR DAMAGE OR LOSS",
     2: "REGISTER OF ADVANCES",
@@ -39,30 +31,26 @@ REPORT_NAMES = {
     7: "Maternity Benefit Register"
 }
 
-@app.route("/add_site", methods=["POST"])
-def add_site():
-    data = request.get_json()
-    site_name = data.get("site_name")
-    site_address = data.get("site_address")
-
-    if not site_name or not site_address:
-        return jsonify({"message": "Both fields required!"}), 400
-
-    sheet.append_row([site_name, site_address])
-    return jsonify({"message": "✅ Site added successfully!"}), 200
-
 @app.route('/')
 def index():
     sites = sheet.get_all_records()
     site_names = [s.get('site_name') or s.get('Site Name') or "Unknown Site" for s in sites]
     return render_template('index.html', sites=site_names)
 
+@app.route("/add_site", methods=["POST"])
+def add_site():
+    data = request.get_json()
+    site_name = data.get("site_name")
+    site_address = data.get("site_address")
+    if not site_name or not site_address:
+        return jsonify({"message": "Both fields required!"}), 400
+    sheet.append_row([site_name, site_address])
+    return jsonify({"message": "✅ Site added successfully!"}), 200
 
 @app.route('/generate', methods=['POST'])
 def generate():
     month_year = request.form['month_year']
     selected_sites = request.form.getlist('sites')
-
     all_sites = sheet.get_all_records()
 
     if "ALL" in selected_sites:
@@ -88,12 +76,9 @@ def generate():
                     os.remove(pdf_path)
 
     buffer.seek(0)
-    return send_file(
-        buffer,
-        as_attachment=True,
-        download_name=f"Reports_{month_year}.zip",
-        mimetype="application/zip"
-    )
+    return send_file(buffer, as_attachment=True,
+                     download_name=f"Reports_{month_year}.zip",
+                     mimetype="application/zip")
 
 
 def fill_excel_and_export(site_name, site_address, month_year, report_no):
@@ -119,35 +104,28 @@ def fill_excel_and_export(site_name, site_address, month_year, report_no):
             ws["R4"] = month_year
 
         output_xlsx = f"temp_{site_name}_Report{report_no}.xlsx"
+        output_pdf = f"temp_{site_name}_Report{report_no}.pdf"
         wb.save(output_xlsx)
 
-        # Convert Excel to HTML
-        html_content = "<html><body><table border='1'>"
-        for row in ws.iter_rows(values_only=True):
-            html_content += "<tr>" + "".join(
-                [f"<td>{str(cell) if cell else ''}</td>" for cell in row]
-            ) + "</tr>"
-        html_content += "</table></body></html>"
+        subprocess.run([
+            "libreoffice",
+            "--headless",
+            "--convert-to", "pdf",
+            "--outdir", os.getcwd(),
+            output_xlsx
+        ], check=True)
 
-        html_path = f"temp_{site_name}_Report{report_no}.html"
-        with open(html_path, "w") as f:
-            f.write(html_content)
-
-        output_pdf = f"temp_{site_name}_Report{report_no}.pdf"
-        pdfkit.from_file(html_path, output_pdf, configuration=config)
-
-
-        os.remove(html_path)
         os.remove(output_xlsx)
         return output_pdf
 
+    except subprocess.CalledProcessError as e:
+        print(f"❌ LibreOffice conversion failed for {site_name} Report {report_no}: {e}")
+        return None
     except Exception as e:
         print(f"❌ Error generating Report {report_no} for {site_name}: {e}")
         return None
 
-if __name__ == '__main__':
-    if os.environ.get("RENDER"):  # Render automatically sets this env variable
-        pass  # Gunicorn will handle it
-    else:
-        app.run(host='0.0.0.0', port=5000, debug=True)
 
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
